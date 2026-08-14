@@ -1,0 +1,12 @@
+yt-dlp - Eto yung magcoconvert ng yt link into mp3 or webm file
+
+Transcribe.py - dito papasok yung file from yt-dlp  then magpoproduce siya ng transcript.json
+
+chunk.py - Ichuchunk niya yung transcript.py into smaller chunks pero mas malaki ang laman
+and that will create a chunks.json which is much shorter sa transcript.json
+
+index.py - turn yung chunks into embeddings and storin it in chroma_db
+
+chroma_db - dito papasok yung data from index.py it uses sqlite
+
+then search.py - iload niya muna yung model then may user input pwede ka magtanong about dun sa lecture and hahanapin ito ng model dun sa database using semantic search at ilalabas yung top 3 timestamp na relevant dun sa input

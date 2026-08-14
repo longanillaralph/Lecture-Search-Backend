@@ -1,0 +1,22 @@
+
+# Virtual environment
+.venv/
+
+# Generated data — regenerable from the pipeline, don't commit
+chroma_db/
+transcript.json
+chunks.json
+
+# Audio/video source files
+*.webm
+*.mp3
+*.wav
+*.m4a
+
+# Python cache
+__pycache__/
+*.pyc
+
+# OS junk
+.DS_Store
+Thumbs.db
