@@ -1,4 +1,3 @@
-
 # Virtual environment
 .venv/
 
@@ -17,8 +16,9 @@ chunks.json
 __pycache__/
 *.pyc
 
+# Secrets — never commit
+.env
+
 # OS junk
 .DS_Store
 Thumbs.db
-
-.env
