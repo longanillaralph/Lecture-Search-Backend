@@ -1,4 +1,6 @@
-# Lecture Search Tool — Technical Documentation
+# Lecture Search Tool — Legacy Technical Notes
+
+> For the current production architecture and deployment guide, read [`APP_DOCUMENTATION.md`](./APP_DOCUMENTATION.md). For the database and next-feature roadmap, read [`NEXT_FEATURES.md`](./NEXT_FEATURES.md). This file preserves the original offline Whisper experiment notes.
 
 > This document is the deep technical reference: exact code walkthroughs, data schemas, and known limitations. For a quick overview of what the project does and the chunk-size evaluation results, see [`README.MD`](./README.MD).
 
