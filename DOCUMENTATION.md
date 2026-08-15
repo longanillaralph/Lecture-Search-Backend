@@ -4,12 +4,12 @@
 
 ## Project Overview
 
-The **Lecture Search Tool** is a Python pipeline that converts lecture recordings into a searchable, timestamped knowledge base. A user supplies a lecture recording, and the system:
+The **Lecture Search Tool** is a Python pipeline that converts each submitted YouTube lecture into a searchable, timestamped knowledge base. The video ID becomes the `lecture_id`, which keeps every indexed lecture isolated from every other lecture. The system:
 
 1. Transcribes the audio into text with timestamps
 2. Groups the transcript into meaningful context chunks — at **three window sizes** (30s, 60s, 120s), to allow evidence-based comparison rather than guessing at one
 3. Converts each chunk into a semantic embedding (a numerical vector representing meaning)
-4. Stores the embeddings in a local vector database — one collection per chunk size
+4. Stores the embeddings in a local vector database — one collection per lecture and chunk size
 5. Evaluates all three chunk sizes against a set of labeled test questions to determine which performs best
 6. Allows natural-language queries against the selected chunk size, returning the **top 3 most relevant timestamps** in the lecture
 
@@ -25,7 +25,7 @@ The pipeline consists of **six stages**. Stages 1–4 run once per lecture; stag
 YouTube link
      |
      v
-  yt-dlp  ---->  audio file (.webm/.mp3)
+  yt-dlp  ---->  temporary audio file (.webm/.mp3)
                        |
                        v
                 transcribe.py  ---->  transcript.json
@@ -34,7 +34,7 @@ YouTube link
                   chunk.py      ---->  chunks_30s.json / chunks_60s.json / chunks_120s.json
                        |
                        v
-                  index.py      ---->  chroma_db/ (3 collections: lecture1_30s, lecture1_60s, lecture1_120s)
+                  index.py      ---->  chroma_db/ (per-lecture collections: lecture_<video_id>_30s)
                        |
                        v
          search.py  <----  evaluate.py (tests all 3 sizes against labeled questions)
@@ -48,9 +48,9 @@ YouTube link
 | Download | `yt-dlp` (CLI) | YouTube URL | Audio file (`.webm` / `.mp3`) |
 | Transcription | `transcribe.py` | Audio file | `transcript.json` |
 | Chunking | `chunk.py` | `transcript.json` | `chunks_30s.json`, `chunks_60s.json`, `chunks_120s.json` |
-| Indexing | `index.py` | `chunks_*.json` (all three) | `chroma_db/` — three collections |
+| Indexing | `index.py` | `chunks_*.json` (offline) | `chroma_db/` — per-lecture collections |
 | Evaluation | `evaluate.py` | `test_questions.json` + `chroma_db/` | Accuracy score per chunk size (console output) |
-| Search | `search.py` | User query + `chroma_db/` (`lecture1_30s` collection) | Top 3 timestamped results |
+| Search | `search.py` / `api.py` | User query + `lecture_id` + `chroma_db/` | Top timestamped results scoped to one lecture |
 
 ---
 
@@ -60,7 +60,7 @@ YouTube link
 
 **Purpose:** Converts an audio/video lecture recording into a timestamped text transcript.
 
-**Input:** An audio file passed directly to the Whisper model (the filename is currently hardcoded in the script).
+**Input:** An audio/video file passed as a command-line argument, or a temporary file downloaded by the API from the submitted YouTube URL.
 
 **Output:** `transcript.json` — a list of segments, where each segment represents a short utterance (typically one sentence) with start/end timestamps.
 
@@ -74,7 +74,7 @@ model = WhisperModel("tiny", device="cpu", compute_type="int8")
 - Runs on **CPU** with **int8 quantization** for speed and lower memory usage. (A GPU/CUDA path was attempted but blocked by a missing `cublas64_12.dll` dependency that a `pip install nvidia-cudnn-cu12` did not resolve — CPU was chosen deliberately to keep the pipeline unblocked. Worth revisiting later, since GPU would meaningfully speed up transcription of future lectures.)
 
 ```python
-segments, info = model.transcribe("lecture.webm", word_timestamps=True)
+segments, info = model.transcribe(audio_path, word_timestamps=False)
 ```
 
 - Transcribes the audio file, enabling word-level timestamps.
@@ -155,12 +155,12 @@ client = chromadb.PersistentClient(path="./chroma_db")
 
 for window in [30, 60, 120]:
     filename = f"chunks_{window}s.json"
-    collection_name = f"lecture1_{window}s"
+    collection_name = f"lecture_{lecture_id}_{window}s"
     collection = client.get_or_create_collection(collection_name)
 ```
 
-- Uses the **`sentence-transformers`** library with the **`all-MiniLM-L6-v2`** model to produce embeddings.
-- Loops over all three chunk sizes, creating a separate named collection for each (`lecture1_30s`, `lecture1_60s`, `lecture1_120s`) so they can be queried and evaluated independently.
+- Uses **FastEmbed** with the **`all-MiniLM-L6-v2`** model to produce embeddings.
+- Names collections from the lecture ID, so a second lecture cannot overwrite or contaminate the first lecture's search space.
 
 ```python
 embeddings = model.encode(texts).tolist()
@@ -175,7 +175,7 @@ collection.add(
 - Encodes all chunk texts into embeddings in one batch, per collection.
 - Adds each chunk to its collection with `ids`, `embeddings`, `documents` (original text), and `metadatas` (timestamp range).
 
-**Dependencies:** `chromadb`, `sentence-transformers`, `json`
+**Dependencies:** `chromadb`, `fastembed`, `json`
 
 ---
 
@@ -201,7 +201,7 @@ def is_correct(results, correct_start, tolerance=30):
 
 ```python
 for window in [30, 60, 120]:
-    collection = client.get_collection(f"lecture1_{window}s")
+    collection = client.get_collection(f"lecture_{lecture_id}_{window}s")
     for item in test_questions:
         query_embedding = model.encode([item["question"]]).tolist()
         results = collection.query(query_embeddings=query_embedding, n_results=3)
@@ -213,15 +213,15 @@ for window in [30, 60, 120]:
 
 **Result:** 30s and 60s windows both scored 4/7; 120s scored 2/7. Two questions failed at every window size — their timestamps were manually re-verified as correct, ruling out chunking as the cause and pointing instead to a limitation in the `tiny` Whisper model's transcription accuracy or the embedding model itself. 30-second windows were selected, using timestamp precision as the tie-breaker over the equally-accurate 60-second option.
 
-**Dependencies:** `chromadb`, `sentence-transformers`, `json`
+**Dependencies:** `chromadb`, `fastembed`, `json`
 
 ---
 
 ### 5. `search.py` — Semantic Search
 
-**Purpose:** Accepts a natural-language question from the user and returns the **top 3 chunks** whose meaning is closest to the query, along with their timestamp ranges. Queries the `lecture1_30s` collection — the chunk size selected by `evaluate.py`.
+**Purpose:** Accepts a natural-language question and a `lecture_id`, then returns the **top 3 chunks** whose meaning is closest to the query, along with their timestamp ranges. The query is always sent to that lecture's collection.
 
-**Input:** User query (via console prompt) + `chroma_db/`
+**Input:** User query + `lecture_id` + `chroma_db/`
 
 **Output:** Top 3 results printed to the console, each showing its `[start → end]` timestamp range and the matching text.
 
@@ -230,11 +230,11 @@ for window in [30, 60, 120]:
 ```python
 model = SentenceTransformer("all-MiniLM-L6-v2")
 client = chromadb.PersistentClient(path="./chroma_db")
-collection = client.get_collection("lecture1_30s")
+collection = client.get_collection(f"lecture_{lecture_id}_30s")
 ```
 
 - Re-loads the **same embedding model** used during indexing (critical: query and stored chunks must live in the same vector space).
-- Opens the existing Chroma database and the selected `lecture1_30s` collection.
+- Opens the existing Chroma database and only the collection belonging to the requested lecture.
 
 ```python
 query = input("Ask a question about the lecture: ")
@@ -257,7 +257,7 @@ for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
 
 - Prints each result with its formatted timestamp range and the original chunk text.
 
-**Dependencies:** `chromadb`, `sentence-transformers`
+**Dependencies:** `chromadb`, `fastembed`
 
 ---
 
@@ -314,7 +314,7 @@ Authored manually. An array of question/timestamp pairs used by `evaluate.py`:
 
 ### `chroma_db/`
 
-Produced by `index.py`. A persistent vector database directory managed by Chroma, containing three collections (`lecture1_30s`, `lecture1_60s`, `lecture1_120s`) — each with embeddings, original documents, metadata, and IDs.
+Produced by `index.py` or the API. A persistent vector database directory managed by Chroma, containing collections named per lecture (for example, `lecture_VIDEO_ID_30s`) with embeddings, original documents, source metadata, timestamps, and IDs.
 
 ---
 
@@ -329,7 +329,7 @@ Produced by `index.py`. A persistent vector database directory managed by Chroma
 
 ```bash
 uv venv --python 3.12
-uv pip install faster-whisper sentence-transformers chromadb streamlit yt-dlp
+uv pip install -r requirements.txt
 ```
 
 ---
@@ -346,10 +346,10 @@ yt-dlp -x --audio-format mp3 "YOUTUBE_URL"
 
 ### 2. Transcribe
 
-Edit the filename inside `transcribe.py` to point to your audio file, then run:
+Pass the local audio/video path to `transcribe.py`, then run:
 
 ```bash
-python transcribe.py
+python transcribe.py path/to/lecture.webm
 ```
 
 ### 3. Chunk the transcript into three window sizes
@@ -361,7 +361,7 @@ python chunk.py
 ### 4. Build the searchable index (all three chunk sizes)
 
 ```bash
-python index.py
+python index.py --lecture-id VIDEO_ID --source-url "https://www.youtube.com/watch?v=VIDEO_ID"
 ```
 
 ### 5. Evaluate which chunk size performs best
@@ -373,7 +373,7 @@ python evaluate.py
 ### 6. Search (uses the selected 30s window)
 
 ```bash
-python search.py
+python search.py --lecture-id VIDEO_ID
 ```
 
 You'll be prompted: `Ask a question about the lecture:` — type a natural-language question. The script prints the top 3 relevant chunks with their timestamp ranges:
@@ -411,10 +411,10 @@ Traditional keyword search matches **exact words**. This system performs **seman
 ### Planned
 
 - [ ] Streamlit interface (upload + search box)
-- [ ] FastAPI backend (in progress — `api.py`)
+- [x] FastAPI backend with dynamic lecture ingestion and scoped search (`api.py`)
 - [ ] Deployment
 - [ ] Investigate the two test questions that failed across all chunk sizes — likely a `tiny` Whisper transcription accuracy or embedding model limitation, not a chunking issue
-- [ ] Support multiple lectures in one deployment (see Known Limitations below)
+- [x] Support multiple lectures in one deployment through per-video collections
 
 ---
 
@@ -423,7 +423,7 @@ Traditional keyword search matches **exact words**. This system performs **seman
 | Component | Tool |
 |---|---|
 | Transcription | [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (`tiny` model, CPU, int8) |
-| Embeddings | [sentence-transformers](https://github.com/UKPLab/sentence-transformers) (`all-MiniLM-L6-v2`) |
+| Embeddings | FastEmbed (`all-MiniLM-L6-v2`) |
 | Vector store | [ChromaDB](https://github.com/chroma-core/chroma) |
 | Audio download | `yt-dlp` |
 | Interface (planned) | Streamlit |
@@ -433,8 +433,9 @@ Traditional keyword search matches **exact words**. This system performs **seman
 
 ## Notes & Known Limitations
 
-- The audio filename in `transcribe.py` is **hardcoded** — it must be edited manually for each new lecture.
-- Collections are named per-lecture-and-window-size (`lecture1_30s`, etc.) but the `lecture1` prefix is itself hardcoded — indexing a second lecture would need a naming scheme change (e.g. deriving the prefix from the filename) or it will collide with the first lecture's collections.
+- The API downloads each requested YouTube lecture to a temporary directory; media files are not kept after indexing.
+- The API uses 30-second windows for production search. The offline `chunk.py`/`index.py` workflow can still generate and compare 30s, 60s, and 120s windows.
 - The `tiny` Whisper model prioritizes speed over accuracy; switching to `small`/`base` would improve transcription quality at the cost of runtime. A GPU path exists in principle but is currently blocked by an unresolved `cublas64_12.dll` dependency issue on this machine.
-- The search is **console-based** in `search.py` — a Streamlit UI and FastAPI backend are both planned/in-progress (see Project Status above).
+- `POST /lectures` returns a `lecture_id`; clients must send that ID to `POST /lectures/{lecture_id}/search` so searches remain lecture-scoped.
+- Answer generation requires `LLM_API_KEY` or `OPENAI_API_KEY`; retrieval-only responses work with `generate_answer: false`.
 - The 30-second-window selection is based on a small test set (7 questions, one lecture). A larger and more diverse test set — more questions, multiple lectures — would give more confidence in the choice generalizing beyond this specific recording.

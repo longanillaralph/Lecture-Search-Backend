@@ -1,38 +1,58 @@
+"""Evaluate retrieval quality for one lecture's configured chunk windows."""
+
+from __future__ import annotations
+
+import argparse
 import json
-import chromadb
-from sentence_transformers import SentenceTransformer
+from typing import Any
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
-client = chromadb.PersistentClient(path="./chroma_db")
+from pipeline import collection_name_for, embed_texts, get_chroma_client
 
-with open("test_questions.json") as f:
-    test_questions = json.load(f)
 
-def is_correct(results, correct_start, tolerance=30):
-    for meta in results["metadatas"][0]:
-        if abs(meta["start"] - correct_start) <= tolerance:
+def is_correct(results: Any, correct_start: float, tolerance: float = 30) -> bool:
+    metadatas = results.get("metadatas") or []
+    if not metadatas:
+        return False
+    for metadata in metadatas[0]:
+        if abs(float(metadata["start"]) - correct_start) <= tolerance:
             return True
     return False
 
-scores = {}
 
-for window in [30, 60, 120]:
-    collection_name = f"lecture1_{window}s"
-    collection = client.get_collection(collection_name)
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Evaluate retrieval for one indexed lecture.")
+    parser.add_argument("--lecture-id", required=True)
+    parser.add_argument("--questions", default="test_questions.json")
+    parser.add_argument("--windows", type=int, nargs="+", default=[30, 60, 120])
+    args = parser.parse_args()
 
-    correct_count = 0
-    for item in test_questions:
-        query_embedding = model.encode([item["question"]]).tolist()
-        results = collection.query(query_embeddings=query_embedding, n_results=3)
+    with open(args.questions, encoding="utf-8") as questions_file:
+        test_questions = json.load(questions_file)
 
-        if is_correct(results, item["correct_start"]):
-            correct_count += 1
-        else:
-            print(f"  [{window}s MISSED] \"{item['question']}\" (expected ~{item['correct_start']}s)")
+    client = get_chroma_client()
+    scores: dict[int, int] = {}
+    for window in args.windows:
+        collection = client.get_collection(collection_name_for(args.lecture_id, window))
+        correct_count = 0
+        for item in test_questions:
+            query_embedding = embed_texts([item["question"]])[0]
+            results = collection.query(query_embeddings=[query_embedding], n_results=3)
 
-    scores[window] = correct_count
-    print(f"\n{window}s window: {correct_count}/{len(test_questions)} correct\n")
+            if is_correct(results, item["correct_start"]):
+                correct_count += 1
+            else:
+                print(
+                    f"  [{window}s MISSED] \"{item['question']}\" "
+                    f"(expected ~{item['correct_start']}s)"
+                )
 
-print("=== Summary ===")
-for window, score in scores.items():
-    print(f"{window}s: {score}/{len(test_questions)}")
+        scores[window] = correct_count
+        print(f"\n{window}s window: {correct_count}/{len(test_questions)} correct\n")
+
+    print("=== Summary ===")
+    for window, score in scores.items():
+        print(f"{window}s: {score}/{len(test_questions)}")
+
+
+if __name__ == "__main__":
+    main()

@@ -6,39 +6,55 @@ This is the backend: transcription, chunking, embedding, search, and evaluation.
 
 ## How it works
 
-The pipeline is six scripts, run in order. Each one reads the file(s) the previous script produced. Two additional scripts (`search.py` and `api.py`) offer alternative ways to query the finished index — a console prompt and an HTTP API respectively.
+The HTTP API processes each submitted YouTube video independently. Its `lecture_id` is the YouTube video ID, so every search is scoped to the lecture selected by the user. The command-line scripts remain available for local/offline processing.
 
 1. **Download audio** — grab a lecture recording from YouTube using `yt-dlp` (or use any local audio/video file).
-2. **`transcribe.py`** — loads the recording and runs it through Whisper (`faster-whisper`) to produce a timestamped transcript. Output: `transcript.json`.
+2. **Transcription** — downloads the source to a temporary directory and runs it through Whisper (`faster-whisper`) to produce a cleaned, timestamped transcript.
 3. **`chunk.py`** — groups the transcript into bigger windows. Generates three sizes to compare: `chunks_30s.json`, `chunks_60s.json`, `chunks_120s.json`.
-4. **`index.py`** — embeds each chunk with `sentence-transformers` and stores it in a Chroma vector database. Each chunk size gets its own collection (`lecture1_30s`, `lecture1_60s`, `lecture1_120s`).
+4. **Indexing** — embeds each chunk with FastEmbed and stores it in a Chroma collection named for that lecture (for example, `lecture_<video_id>_30s`).
 5. **`evaluate.py`** — runs labeled test questions against every chunk size and measures retrieval accuracy, producing the evidence behind the chunk-size decision (see below).
-6. **Query the index** — either:
-   - **`search.py`** — console prompt, prints top 3 results with timestamps.
-   - **`api.py`** — FastAPI HTTP endpoint (`GET /search?q=...`), returns structured JSON. Includes CORS support for the React frontend running on `localhost:5173`. Interactive docs at `/docs`.
+6. **Query the index** — `POST /lectures/{lecture_id}/search` performs semantic search only within that lecture and can generate a grounded answer with timestamped sources.
 
 ```
-YouTube link
+YouTube link + lecture_id
      |
      v
-  yt-dlp  ---->  audio file (.webm/.mp3)
+  yt-dlp  ---->  temporary audio file
                        |
                        v
-                transcribe.py  ---->  transcript.json
+                Whisper  ---->  cleaned transcript
                        |
                        v
-                  chunk.py      ---->  chunks_30s.json / chunks_60s.json / chunks_120s.json
+                  chunking      ---->  30-second chunks
                        |
                        v
-                  index.py      ---->  chroma_db/ (3 collections)
+                  indexing      ---->  chroma_db/lecture_<video_id>_30s
                        |
                        v
-         search.py  <----  evaluate.py (tests all 3 sizes)
+       semantic search
               |
-       (console)
-              |
-         api.py  ---->  (HTTP JSON, used by the React frontend)
+       answer + sources
 ```
+
+## HTTP API
+
+Process a lecture once, then use the returned ID for all questions:
+
+```http
+POST /lectures
+Content-Type: application/json
+
+{"url":"https://www.youtube.com/watch?v=VIDEO_ID"}
+```
+
+```http
+POST /lectures/VIDEO_ID/search
+Content-Type: application/json
+
+{"question":"What is a limit?","top_k":3,"generate_answer":true}
+```
+
+The response contains `answer` and `results`. Each result includes the source URL, transcript text, and `start`/`end` timestamps. Set `LLM_API_KEY` (or `OPENAI_API_KEY`) and optionally `LLM_MODEL`/`LLM_CHAT_COMPLETIONS_URL` to enable answer generation. Retrieval remains available with `generate_answer: false`.
 
 ## Why semantic search, not keyword search
 
@@ -66,29 +82,29 @@ Full technical detail on every script and data format lives in [`DOCUMENTATION.m
 
 ```bash
 uv venv --python 3.12
-uv pip install faster-whisper sentence-transformers chromadb streamlit yt-dlp fastapi uvicorn
+uv pip install -r requirements.txt
 ```
 
 ## Usage
 
 ```bash
-# 1. Download a lecture (or supply your own audio/video file)
+# 1. Optional offline workflow: download a lecture (or supply a local file)
 yt-dlp -x --audio-format mp3 "YOUTUBE_URL"
 
-# 2. Transcribe (edit the filename inside transcribe.py first)
-python transcribe.py
+# 2. Transcribe the supplied file; there is no filename hardcoded in the script
+python transcribe.py path/to/lecture.webm
 
 # 3. Chunk the transcript into three window sizes
 python chunk.py
 
-# 4. Build the searchable index (all three chunk sizes)
-python index.py
+# 4. Build per-lecture indexes
+python index.py --lecture-id VIDEO_ID --source-url "https://www.youtube.com/watch?v=VIDEO_ID"
 
 # 5. Evaluate which chunk size performs best
 python evaluate.py
 
-# 6a. Search from the console
-python search.py
+# 6a. Search one lecture from the console
+python search.py --lecture-id VIDEO_ID
 
 # 6b. OR run the API (needed if using the React frontend)
 uvicorn api:app --reload
@@ -104,7 +120,8 @@ uvicorn api:app --reload
 - [x] Compared chunk window sizes against 7 labeled test questions — 30-second windows selected
 - [x] FastAPI HTTP endpoint with CORS support
 - [x] React frontend (separate repo) with styled UI and error handling
-- [ ] Support multiple lectures (currently the `lecture1` collection prefix is hardcoded — see DOCUMENTATION.md Known Limitations)
+- [x] Dynamic processing and per-lecture collections for supported YouTube URLs
+- [x] HTTP search scoped by `lecture_id`, with optional grounded LLM answers
 - [ ] Deploy backend + frontend
 
 ## Resume bullet
@@ -116,7 +133,7 @@ Built a lecture search tool that transcribes audio and enables semantic search o
 | Piece | Tool |
 |---|---|
 | Transcription | faster-whisper (`tiny` model, CPU) |
-| Embeddings | sentence-transformers (`all-MiniLM-L6-v2`) |
+| Embeddings | FastEmbed (`all-MiniLM-L6-v2`) |
 | Vector store | ChromaDB |
 | API | FastAPI |
 | Frontend | React (see [lecture-search-frontend](https://github.com/longanillaralph/lecture-search-frontend)) |

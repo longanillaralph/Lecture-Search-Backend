@@ -1,15 +1,31 @@
-import chromadb
-from sentence_transformers import SentenceTransformer
+"""Search one lecture from the command line."""
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
-client = chromadb.PersistentClient(path="./chroma_db") #* bubuksan niya yung persistent na database sa local storage
-collection = client.get_collection("lecture1") #* bubuksan niya yung collection na lecture1 sa loob ng database
+from __future__ import annotations
 
-query = input("Ask a question about the lecture: ") #* Eto yung input ng user na query
-query_embedding = model.encode([query]).tolist()
+import argparse
 
-results = collection.query(query_embeddings=query_embedding, n_results=3) #* Eto yung magreresult ng top 3 na pinaka-malapit na chunks sa query ng user
+from pipeline import get_chroma_client, search_lecture
 
-for doc, meta in zip(results["documents"][0], results["metadatas"][0]):
-    print(f"\n[{meta['start']:.0f}s -> {meta['end']:.0f}s]")
-    print(doc)
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Ask a question about one indexed lecture.")
+    parser.add_argument(
+        "--lecture-id",
+        required=True,
+        help="The lecture_id returned by the ingestion/API pipeline",
+    )
+    parser.add_argument("--top-k", type=int, default=3)
+    parser.add_argument("question", nargs="?", help="Question; prompts when omitted")
+    args = parser.parse_args()
+
+    question = args.question or input("Ask a question about the lecture: ")
+    results = search_lecture(
+        get_chroma_client(), args.lecture_id, question, top_k=args.top_k
+    )
+    for result in results:
+        print(f"\n[{result['start']:.0f}s -> {result['end']:.0f}s]")
+        print(result["text"])
+
+
+if __name__ == "__main__":
+    main()

@@ -1,22 +1,28 @@
-from faster_whisper import WhisperModel
-import json 
+"""Transcribe a supplied local lecture recording."""
 
-model = WhisperModel("tiny", device="cpu", compute_type="int8")
+from __future__ import annotations
 
-segments, info = model.transcribe(
-    "Calculus 1 Lecture 1.1：  An Introduction to Limits [54_XRjHhZzI].webm",
-    word_timestamps=True
-)
+import argparse
+from pathlib import Path
 
-results = []
-for segment in segments:
-    results.append({
-        "start": segment.start,
-        "end": segment.end,
-        "text": segment.text
-    })
+from pipeline import save_transcript, transcribe_audio
 
-with open("transcript.json", "w") as f:
-    json.dump(results, f, indent=2)
 
-print(f"Saved {len(results)} segments to transcript.json")
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Transcribe a lecture recording with Whisper.")
+    parser.add_argument("input_file", type=Path, help="Path to the downloaded audio/video file")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("transcript.json"),
+        help="Transcript JSON output path (default: transcript.json)",
+    )
+    args = parser.parse_args()
+
+    segments = transcribe_audio(args.input_file)
+    save_transcript(segments, args.output)
+    print(f"Saved {len(segments)} cleaned segments to {args.output}")
+
+
+if __name__ == "__main__":
+    main()
