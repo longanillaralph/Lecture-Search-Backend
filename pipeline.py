@@ -60,6 +60,10 @@ class LLMRequestError(RuntimeError):
     """Raised when the configured LLM cannot generate an answer."""
 
 
+class LectureProcessingError(RuntimeError):
+    """Raised when an external service or processing stage cannot complete."""
+
+
 @dataclass(frozen=True)
 class YouTubeSource:
     video_id: str
@@ -303,7 +307,7 @@ def download_youtube_audio(source: YouTubeSource, output_dir: str | Path) -> tup
     try:
         from yt_dlp import YoutubeDL
     except ImportError as exc:
-        raise RuntimeError("yt-dlp is required to process YouTube URLs.") from exc
+        raise LectureProcessingError("yt-dlp is required to process YouTube URLs.") from exc
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -316,9 +320,14 @@ def download_youtube_audio(source: YouTubeSource, output_dir: str | Path) -> tup
         "restrictfilenames": True,
     }
 
-    with YoutubeDL(options) as downloader:
-        info = downloader.extract_info(source.canonical_url, download=True)
-        title = str(info.get("title") or source.video_id)
+    try:
+        with YoutubeDL(options) as downloader:
+            info = downloader.extract_info(source.canonical_url, download=True)
+            title = str(info.get("title") or source.video_id)
+    except Exception as exc:
+        raise LectureProcessingError(
+            "YouTube could not provide this video. Make sure it is public and available without sign-in."
+        ) from exc
 
     audio_files = [
         path
@@ -326,7 +335,7 @@ def download_youtube_audio(source: YouTubeSource, output_dir: str | Path) -> tup
         if path.is_file() and path.suffix not in {".part", ".ytdl", ".json"}
     ]
     if not audio_files:
-        raise RuntimeError("yt-dlp completed without producing an audio file.")
+        raise LectureProcessingError("YouTube did not provide a downloadable audio file for this video.")
     return audio_files[0], title
 
 
@@ -476,16 +485,23 @@ def ingest_youtube_lecture(
     except NotFoundError:
         pass
 
-    with tempfile.TemporaryDirectory(prefix=f"lecture-{lecture_id}-") as temp_dir:
-        audio_path, title = download_youtube_audio(source, temp_dir)
-        transcript = transcribe_audio(audio_path)
-        chunks = chunk_by_time(transcript, window_seconds=window_seconds)
-        result = index_lecture_chunks(
-            client,
-            lecture_id=lecture_id,
-            source=source,
-            title=title,
-            chunks=chunks,
-            window_seconds=window_seconds,
-        )
+    try:
+        with tempfile.TemporaryDirectory(prefix=f"lecture-{lecture_id}-") as temp_dir:
+            audio_path, title = download_youtube_audio(source, temp_dir)
+            transcript = transcribe_audio(audio_path)
+            chunks = chunk_by_time(transcript, window_seconds=window_seconds)
+            result = index_lecture_chunks(
+                client,
+                lecture_id=lecture_id,
+                source=source,
+                title=title,
+                chunks=chunks,
+                window_seconds=window_seconds,
+            )
+    except LectureProcessingError:
+        raise
+    except Exception as exc:
+        raise LectureProcessingError(
+            "Lecture transcription or indexing failed. Check the backend service logs."
+        ) from exc
     return result, source, title

@@ -14,6 +14,7 @@ from pydantic import AnyHttpUrl, BaseModel, Field
 from pipeline import (
     LLMNotConfigured,
     LLMRequestError,
+    LectureProcessingError,
     LectureInputError,
     collection_name_for,
     generate_answer,
@@ -123,6 +124,9 @@ def _http_error_for_pipeline(exc: Exception) -> HTTPException:
         return HTTPException(status_code=503, detail=str(exc))
 
     if isinstance(exc, LLMRequestError):
+        return HTTPException(status_code=502, detail=str(exc))
+
+    if isinstance(exc, LectureProcessingError):
         return HTTPException(status_code=502, detail=str(exc))
 
     if isinstance(exc, RuntimeError):
