@@ -1,17 +1,21 @@
-# Lecture Search Tool
+# Lecture Search Tool — Backend
 
 Upload a lecture recording, get back a searchable transcript. Ask a question about the lecture in plain language and jump straight to the timestamp where it was discussed — instead of scrubbing through a 75-minute recording by hand.
 
+This is the backend: transcription, chunking, embedding, search, and evaluation. It exposes both a console interface and a FastAPI HTTP API. For the React frontend that talks to this API, see [lecture-search-frontend](https://github.com/longanillaralph/lecture-search-frontend).
+
 ## How it works
 
-The pipeline is six scripts, run in order. Each one reads the file(s) the previous script produced.
+The pipeline is six scripts, run in order. Each one reads the file(s) the previous script produced. Two additional scripts (`search.py` and `api.py`) offer alternative ways to query the finished index — a console prompt and an HTTP API respectively.
 
 1. **Download audio** — grab a lecture recording from YouTube using `yt-dlp` (or use any local audio/video file).
-2. **`transcribe.py`** — loads the recording and runs it through Whisper (`faster-whisper`) to produce a timestamped transcript. Output: `transcript.json`, a list of small segments (mostly single sentences), each with a start time, end time, and text.
-3. **`chunk.py`** — groups those small segments into bigger windows, so each piece has enough context to make sense on its own. Generates three window sizes to compare: `chunks_30s.json`, `chunks_60s.json`, `chunks_120s.json` (see "Chunk size evaluation" below for why).
-4. **`index.py`** — turns each chunk's text into an embedding (a list of numbers representing its meaning) using a sentence-transformers model, then stores the embedding, the original text, and the timestamp together in a Chroma vector database. Each chunk size gets its own collection (`lecture1_30s`, `lecture1_60s`, `lecture1_120s`). Output: a `chroma_db/` folder on disk (Chroma uses SQLite internally for persistence, but all reads/writes go through Chroma's own API, not raw SQL).
-5. **`search.py`** — loads the same embedding model, takes a typed question, turns it into an embedding the same way, and asks Chroma for the 3 stored chunks whose embeddings are closest in meaning. Prints each result's timestamp range and text.
-6. **`evaluate.py`** — runs a set of test questions (each with a known correct timestamp) against every chunk size and measures how often the correct result comes back. This is the script that produced the evidence behind the chunk-size decision below.
+2. **`transcribe.py`** — loads the recording and runs it through Whisper (`faster-whisper`) to produce a timestamped transcript. Output: `transcript.json`.
+3. **`chunk.py`** — groups the transcript into bigger windows. Generates three sizes to compare: `chunks_30s.json`, `chunks_60s.json`, `chunks_120s.json`.
+4. **`index.py`** — embeds each chunk with `sentence-transformers` and stores it in a Chroma vector database. Each chunk size gets its own collection (`lecture1_30s`, `lecture1_60s`, `lecture1_120s`).
+5. **`evaluate.py`** — runs labeled test questions against every chunk size and measures retrieval accuracy, producing the evidence behind the chunk-size decision (see below).
+6. **Query the index** — either:
+   - **`search.py`** — console prompt, prints top 3 results with timestamps.
+   - **`api.py`** — FastAPI HTTP endpoint (`GET /search?q=...`), returns structured JSON. Includes CORS support for the React frontend running on `localhost:5173`. Interactive docs at `/docs`.
 
 ```
 YouTube link
@@ -31,8 +35,9 @@ YouTube link
                        v
          search.py  <----  evaluate.py (tests all 3 sizes)
               |
-              v
-     top 3 relevant timestamps
+       (console)
+              |
+         api.py  ---->  (HTTP JSON, used by the React frontend)
 ```
 
 ## Why semantic search, not keyword search
@@ -52,14 +57,16 @@ The "messy decision" this project is built around is chunk size — too small an
 | 120s | 2/7 |
 
 - 30s and 60s tied on accuracy; 120s clearly underperformed, consistent with the expected failure mode — larger chunks blend multiple topics together, diluting the embedding and making it less precise for narrow questions.
-- 2 of 7 questions failed at every window size. The corresponding timestamps were manually re-verified as correct, ruling out chunking as the cause — this points instead to a limitation in the `tiny` Whisper model's transcription accuracy or the embedding model itself, worth investigating separately.
-- **Selected: 30-second windows.** With 30s and 60s tied on accuracy, the tie-breaker was timestamp precision — a 30-second window lands a user closer to the exact moment they're looking for than a 60-second one, which matters more once accuracy is no longer the deciding factor.
+- 2 of 7 questions failed at every window size. The corresponding timestamps were manually re-verified as correct, ruling out chunking as the cause — this points instead to a limitation in the `tiny` Whisper model's transcription accuracy or the embedding model itself.
+- **Selected: 30-second windows.** With 30s and 60s tied on accuracy, the tie-breaker was timestamp precision — a 30-second window lands a user closer to the exact moment they're looking for.
+
+Full technical detail on every script and data format lives in [`DOCUMENTATION.md`](./DOCUMENTATION.md).
 
 ## Setup
 
 ```bash
 uv venv --python 3.12
-uv pip install faster-whisper sentence-transformers chromadb streamlit yt-dlp
+uv pip install faster-whisper sentence-transformers chromadb streamlit yt-dlp fastapi uvicorn
 ```
 
 ## Usage
@@ -80,8 +87,12 @@ python index.py
 # 5. Evaluate which chunk size performs best
 python evaluate.py
 
-# 6. Search (uses the 30s window, per the evaluation above)
+# 6a. Search from the console
 python search.py
+
+# 6b. OR run the API (needed if using the React frontend)
+uvicorn api:app --reload
+# Interactive docs: http://localhost:8000/docs
 ```
 
 ## Current status
@@ -90,9 +101,11 @@ python search.py
 - [x] Chunking into three window sizes (30s: 157 chunks, 60s: 82 chunks, 120s: 43 chunks)
 - [x] Embedding + Chroma indexing (three separate collections)
 - [x] Semantic search returning relevant, correctly-distinguished results across different topics in the same lecture
-- [x] Compared chunk window sizes against 7 labeled test questions — **30-second windows selected**, based on accuracy matching the 60s window while returning more precise timestamps
-- [ ] Streamlit interface (upload + search box)
-- [ ] Deploy
+- [x] Compared chunk window sizes against 7 labeled test questions — 30-second windows selected
+- [x] FastAPI HTTP endpoint with CORS support
+- [x] React frontend (separate repo) with styled UI and error handling
+- [ ] Support multiple lectures (currently the `lecture1` collection prefix is hardcoded — see DOCUMENTATION.md Known Limitations)
+- [ ] Deploy backend + frontend
 
 ## Resume bullet
 
@@ -105,4 +118,5 @@ Built a lecture search tool that transcribes audio and enables semantic search o
 | Transcription | faster-whisper (`tiny` model, CPU) |
 | Embeddings | sentence-transformers (`all-MiniLM-L6-v2`) |
 | Vector store | ChromaDB |
-| Interface (planned) | Streamlit |
+| API | FastAPI |
+| Frontend | React (see [lecture-search-frontend](https://github.com/longanillaralph/lecture-search-frontend)) |

@@ -2,7 +2,7 @@
 .venv/
 
 # Generated data — regenerable from the pipeline, don't commit
-chroma_db/
+
 transcript.json
 chunks.json
 
@@ -19,6 +19,3 @@ __pycache__/
 # Secrets — never commit
 .env
 
-# OS junk
-.DS_Store
-Thumbs.db
