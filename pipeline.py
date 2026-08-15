@@ -31,6 +31,9 @@ load_dotenv(Path(__file__).resolve().parent / ".env")
 
 
 logger = logging.getLogger(__name__)
+DEFAULT_WINDOW_SECONDS = int(os.getenv("CHUNK_WINDOW_SECONDS", "60"))
+EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "16"))
+MAX_TRANSCRIPT_SEGMENTS = int(os.getenv("MAX_TRANSCRIPT_SEGMENTS", "5000"))
 
 
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -129,7 +132,7 @@ def validate_lecture_id(lecture_id: str) -> str:
     return value
 
 
-def collection_name_for(lecture_id: str, window_seconds: int = 30) -> str:
+def collection_name_for(lecture_id: str, window_seconds: int = DEFAULT_WINDOW_SECONDS) -> str:
     lecture_id = validate_lecture_id(lecture_id)
     if window_seconds <= 0:
         raise LectureInputError("window_seconds must be positive.")
@@ -159,7 +162,7 @@ def clean_transcript(segments: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
 
 
 def chunk_by_time(
-    segments: Sequence[dict[str, Any]], window_seconds: int = 30
+    segments: Sequence[dict[str, Any]], window_seconds: int = DEFAULT_WINDOW_SECONDS
 ) -> list[dict[str, Any]]:
     """Group cleaned transcript segments into timestamped context windows."""
 
@@ -214,7 +217,7 @@ def get_embedding_model() -> Any:
     return _embedding_model
 
 
-def embed_texts(texts: Sequence[str], batch_size: int = 128) -> list[Embedding]:
+def embed_texts(texts: Sequence[str], batch_size: int = EMBEDDING_BATCH_SIZE) -> list[Embedding]:
     model = get_embedding_model()
     embeddings: list[Embedding] = []
     for start in range(0, len(texts), batch_size):
@@ -229,7 +232,7 @@ def get_chroma_client() -> ClientAPI:
     return chromadb.PersistentClient(path=str(db_path))
 
 
-def get_lecture_collection(client: ClientAPI, lecture_id: str, window_seconds: int = 30) -> Any:
+def get_lecture_collection(client: ClientAPI, lecture_id: str, window_seconds: int = DEFAULT_WINDOW_SECONDS) -> Any:
     name = collection_name_for(lecture_id, window_seconds)
     try:
         return client.get_collection(name)
@@ -243,7 +246,7 @@ def index_lecture_chunks(
     source: YouTubeSource,
     title: str,
     chunks: Sequence[dict[str, Any]],
-    window_seconds: int = 30,
+    window_seconds: int = DEFAULT_WINDOW_SECONDS,
 ) -> IndexResult:
     """Create a per-lecture Chroma collection and add all chunk embeddings."""
 
@@ -274,13 +277,13 @@ def index_lecture_chunks(
         collection = client.create_collection(collection_name, metadata=metadata)
 
     try:
-        texts = [str(chunk["text"]) for chunk in chunks]
-        embeddings = embed_texts(texts)
-        for start in range(0, len(chunks), 128):
-            batch_chunks = chunks[start : start + 128]
+        for start in range(0, len(chunks), EMBEDDING_BATCH_SIZE):
+            batch_chunks = chunks[start : start + EMBEDDING_BATCH_SIZE]
+            texts = [str(chunk["text"]) for chunk in batch_chunks]
+            embeddings = embed_texts(texts, batch_size=EMBEDDING_BATCH_SIZE)
             collection.add(
                 ids=[f"{lecture_id}-{index}" for index in range(start, start + len(batch_chunks))],
-                embeddings=embeddings[start : start + len(batch_chunks)],
+                embeddings=embeddings,
                 documents=[chunk["text"] for chunk in batch_chunks],
                 metadatas=[
                     {
@@ -423,7 +426,7 @@ def search_lecture(
     lecture_id: str,
     question: str,
     top_k: int = 3,
-    window_seconds: int = 30,
+    window_seconds: int = DEFAULT_WINDOW_SECONDS,
 ) -> list[dict[str, Any]]:
     question = " ".join(str(question).split())
     if not question:
@@ -518,7 +521,7 @@ def generate_answer(question: str, sources: Sequence[dict[str, Any]]) -> str:
 def ingest_youtube_lecture(
     client: ClientAPI,
     raw_url: str,
-    window_seconds: int = 30,
+    window_seconds: int = DEFAULT_WINDOW_SECONDS,
 ) -> tuple[IndexResult, YouTubeSource, str]:
     """Fetch captions, chunk, embed, and index one lecture."""
 
@@ -540,7 +543,7 @@ def ingest_youtube_lecture(
         pass
 
     try:
-        transcript = fetch_youtube_transcript(source)
+        transcript = fetch_youtube_transcript(source)[:MAX_TRANSCRIPT_SEGMENTS]
         title = source.video_id
         chunks = chunk_by_time(transcript, window_seconds=window_seconds)
         result = index_lecture_chunks(
