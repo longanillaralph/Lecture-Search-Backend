@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from pydantic import BaseModel
 import chromadb
-from sentence_transformers import SentenceTransformer
+from fastembed import TextEmbedding
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="Lecture Search API")
@@ -14,7 +14,7 @@ app.add_middleware(
 )
 
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
+model = TextEmbedding("sentence-transformers/all-MiniLM-L6-v2")
 client = chromadb.PersistentClient(path="./chroma_db")
 collection = client.get_collection("lecture1_30s")
 
@@ -29,7 +29,7 @@ class SearchResponse(BaseModel):
 
 @app.get("/search", response_model=SearchResponse)
 def search(q: str):
-    query_embedding = model.encode([q]).tolist()
+    query_embedding = list(model.embed([q]))[0].tolist()
     results = collection.query(query_embeddings=query_embedding, n_results=3)
 
     search_results = [
