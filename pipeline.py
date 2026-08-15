@@ -17,7 +17,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Sequence
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import chromadb
 from chromadb.api import ClientAPI
@@ -306,6 +306,38 @@ def index_lecture_chunks(
 
 def fetch_youtube_transcript(source: YouTubeSource) -> list[dict[str, Any]]:
     """Fetch public manual or auto-generated captions without downloading media."""
+
+    supadata_key = os.getenv("SUPADATA_API_KEY", "").strip()
+    if supadata_key:
+        languages = [
+            language.strip()
+            for language in os.getenv("TRANSCRIPT_LANGUAGES", "en").split(",")
+            if language.strip()
+        ] or ["en"]
+        query = urlencode({"url": source.canonical_url, "lang": languages[0], "mode": "auto"})
+        request = urllib.request.Request(
+            f"https://api.supadata.ai/v1/transcript?{query}",
+            headers={"x-api-key": supadata_key, "Accept": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                body = json.loads(response.read().decode("utf-8"))
+            content = body.get("content", [])
+            if not isinstance(content, list) or not content:
+                raise ValueError("Supadata returned no transcript content.")
+            return clean_transcript(
+                {
+                    "start": float(item.get("offset", 0)) / 1000,
+                    "end": (float(item.get("offset", 0)) + float(item.get("duration", 0))) / 1000,
+                    "text": str(item.get("text", "")),
+                }
+                for item in content
+            )
+        except Exception as exc:
+            logger.exception("Supadata caption retrieval failed for video %s", source.video_id)
+            raise LectureProcessingError(
+                "The transcript service could not retrieve captions for this video."
+            ) from exc
 
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
