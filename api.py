@@ -76,7 +76,7 @@ class LectureDetailsResponse(LectureResponse):
 
 
 class SearchRequest(BaseModel):
-    question: str = Field(..., min_length=1, alias="q")
+    question: str = Field(..., min_length=1, max_length=2000, alias="q")
     lecture_id: str | None = None
     url: AnyHttpUrl | None = None
     top_k: int = Field(default=3, ge=1, le=20)
@@ -86,7 +86,7 @@ class SearchRequest(BaseModel):
 
 
 class ProcessedLectureSearchRequest(BaseModel):
-    question: str = Field(..., min_length=1, alias="q")
+    question: str = Field(..., min_length=1, max_length=2000, alias="q")
     top_k: int = Field(default=3, ge=1, le=20)
     generate_answer: bool = True
 
@@ -106,6 +106,13 @@ class SearchResponse(BaseModel):
     lecture_id: str
     answer: str | None = None
     results: list[SearchResult]
+
+
+@app.get("/healthz")
+def health_check() -> dict[str, str]:
+    """Small readiness endpoint for a hosting provider or load balancer."""
+
+    return {"status": "ok"}
 
 
 def _http_error_for_pipeline(exc: Exception) -> HTTPException:

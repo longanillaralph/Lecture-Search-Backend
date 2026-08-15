@@ -5,6 +5,7 @@
 
 transcript.json
 chunks.json
+chroma_db/
 
 # Audio/video source files
 *.webm

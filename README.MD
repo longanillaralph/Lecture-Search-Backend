@@ -4,6 +4,23 @@ Upload a lecture recording, get back a searchable transcript. Ask a question abo
 
 This is the backend: transcription, chunking, embedding, search, and evaluation. It exposes both a console interface and a FastAPI HTTP API. For the React frontend that talks to this API, see [lecture-search-frontend](https://github.com/longanillaralph/lecture-search-frontend).
 
+## Deployment
+
+Use Python 3.12, install `requirements.txt`, and start the web service with:
+
+```bash
+uvicorn api:app --host 0.0.0.0 --port "$PORT"
+```
+
+Configure these environment variables in the hosting provider:
+
+- `LLM_API_KEY` (or `OPENAI_API_KEY`) for generated answers
+- `LLM_MODEL` and, for OpenAI-compatible providers, `LLM_CHAT_COMPLETIONS_URL`
+- `CORS_ORIGINS` as a comma-separated list containing the exact deployed frontend origin
+- `CHROMA_DB_PATH` pointing at persistent storage; the default local path is not durable on ephemeral hosts
+
+Set the provider health check to `GET /healthz`. Keep this service at one worker unless the Chroma path is shared by a storage layer that supports concurrent writers. Lecture ingestion is synchronous and CPU-intensive, so the host must allow requests to run for several minutes.
+
 ## How it works
 
 The HTTP API processes each submitted YouTube video independently. Its `lecture_id` is the YouTube video ID, so every search is scoped to the lecture selected by the user. The command-line scripts remain available for local/offline processing.
