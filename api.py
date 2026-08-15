@@ -8,7 +8,7 @@ app = FastAPI(title="Lecture Search API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://lecture-search-frontend.vercel.app/"],
+    allow_origins=["https://lecture-search-frontend.vercel.app"],
     allow_methods=["GET"],
     allow_headers=["*"],
 )
