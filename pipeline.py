@@ -8,6 +8,7 @@ experimental lecture's filenames or collection names.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import tempfile
@@ -27,6 +28,9 @@ from dotenv import load_dotenv
 
 
 load_dotenv(Path(__file__).resolve().parent / ".env")
+
+
+logger = logging.getLogger(__name__)
 
 
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -325,6 +329,7 @@ def download_youtube_audio(source: YouTubeSource, output_dir: str | Path) -> tup
             info = downloader.extract_info(source.canonical_url, download=True)
             title = str(info.get("title") or source.video_id)
     except Exception as exc:
+        logger.exception("yt-dlp failed while downloading video %s", source.video_id)
         raise LectureProcessingError(
             "YouTube could not provide this video. Make sure it is public and available without sign-in."
         ) from exc

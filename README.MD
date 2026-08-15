@@ -9,8 +9,11 @@ This is the backend: transcription, chunking, embedding, search, and evaluation.
 Use Python 3.12, install `requirements.txt`, and start the web service with:
 
 ```bash
-uvicorn api:app --host 0.0.0.0 --port "$PORT"
+bash render-build.sh
+bash render-start.sh
 ```
+
+On Render, set the build command to `bash render-build.sh` and the start command to `bash render-start.sh`. These scripts install Deno and expose it to `yt-dlp`; current YouTube extraction requires a JavaScript runtime and the `yt-dlp[default]` EJS dependency.
 
 Configure these environment variables in the hosting provider:
 
