@@ -9,11 +9,11 @@ This is the backend: transcription, chunking, embedding, search, and evaluation.
 Use Python 3.12, install `requirements.txt`, and start the web service with:
 
 ```bash
-bash render-build.sh
-bash render-start.sh
+pip install -r requirements.txt
+uvicorn api:app --host 0.0.0.0 --port $PORT
 ```
 
-On Render, set the build command to `bash render-build.sh` and the start command to `bash render-start.sh`. These scripts install Deno and expose it to `yt-dlp`; current YouTube extraction requires a JavaScript runtime and the `yt-dlp[default]` EJS dependency.
+On Render, set the build command to `pip install -r requirements.txt` and the start command to `uvicorn api:app --host 0.0.0.0 --port $PORT`.
 
 Configure these environment variables in the hosting provider:
 
@@ -28,8 +28,8 @@ Set the provider health check to `GET /healthz`. Keep this service at one worker
 
 The HTTP API processes each submitted YouTube video independently. Its `lecture_id` is the YouTube video ID, so every search is scoped to the lecture selected by the user. The command-line scripts remain available for local/offline processing.
 
-1. **Download audio** — grab a lecture recording from YouTube using `yt-dlp` (or use any local audio/video file).
-2. **Transcription** — downloads the source to a temporary directory and runs it through Whisper (`faster-whisper`) to produce a cleaned, timestamped transcript.
+1. **Fetch captions** — the HTTP API retrieves public manual or auto-generated YouTube captions without downloading the video.
+2. **Transcription** — caption segments are cleaned into a timestamped transcript. Videos without accessible captions cannot be processed by the HTTP API.
 3. **`chunk.py`** — groups the transcript into bigger windows. Generates three sizes to compare: `chunks_30s.json`, `chunks_60s.json`, `chunks_120s.json`.
 4. **Indexing** — embeds each chunk with FastEmbed and stores it in a Chroma collection named for that lecture (for example, `lecture_<video_id>_30s`).
 5. **`evaluate.py`** — runs labeled test questions against every chunk size and measures retrieval accuracy, producing the evidence behind the chunk-size decision (see below).
@@ -39,12 +39,9 @@ The HTTP API processes each submitted YouTube video independently. Its `lecture_
 YouTube link + lecture_id
      |
      v
-  yt-dlp  ---->  temporary audio file
-                       |
-                       v
-                Whisper  ---->  cleaned transcript
-                       |
-                       v
+  captions API  ---->  cleaned transcript
+                        |
+                        v
                   chunking      ---->  30-second chunks
                        |
                        v
@@ -108,19 +105,16 @@ uv pip install -r requirements.txt
 ## Usage
 
 ```bash
-# 1. Optional offline workflow: download a lecture (or supply a local file)
-yt-dlp -x --audio-format mp3 "YOUTUBE_URL"
-
-# 2. Transcribe the supplied file; there is no filename hardcoded in the script
+# 1. Optional offline workflow: transcribe a local recording; there is no filename hardcoded
 python transcribe.py path/to/lecture.webm
 
-# 3. Chunk the transcript into three window sizes
+# 2. Chunk the transcript into three window sizes
 python chunk.py
 
-# 4. Build per-lecture indexes
+# 3. Build per-lecture indexes
 python index.py --lecture-id VIDEO_ID --source-url "https://www.youtube.com/watch?v=VIDEO_ID"
 
-# 5. Evaluate which chunk size performs best
+# 4. Evaluate which chunk size performs best
 python evaluate.py
 
 # 6a. Search one lecture from the console

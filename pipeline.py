@@ -11,7 +11,6 @@ import json
 import logging
 import os
 import re
-import tempfile
 import threading
 import urllib.error
 import urllib.request
@@ -305,43 +304,47 @@ def index_lecture_chunks(
     return IndexResult(lecture_id, collection_name, len(chunks), False)
 
 
-def download_youtube_audio(source: YouTubeSource, output_dir: str | Path) -> tuple[Path, str]:
-    """Download the source audio without creating a permanent media file."""
+def fetch_youtube_transcript(source: YouTubeSource) -> list[dict[str, Any]]:
+    """Fetch public manual or auto-generated captions without downloading media."""
 
     try:
-        from yt_dlp import YoutubeDL
+        from youtube_transcript_api import YouTubeTranscriptApi
     except ImportError as exc:
-        raise LectureProcessingError("yt-dlp is required to process YouTube URLs.") from exc
+        raise LectureProcessingError("The YouTube transcript dependency is not installed.") from exc
 
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
-    options: Any = {
-        "format": "bestaudio/best",
-        "outtmpl": str(output_path / "lecture.%(ext)s"),
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "restrictfilenames": True,
-    }
+    languages = [
+        language.strip()
+        for language in os.getenv("TRANSCRIPT_LANGUAGES", "en").split(",")
+        if language.strip()
+    ] or ["en"]
 
     try:
-        with YoutubeDL(options) as downloader:
-            info = downloader.extract_info(source.canonical_url, download=True)
-            title = str(info.get("title") or source.video_id)
+        transcript_api = YouTubeTranscriptApi()
+        try:
+            fetched = transcript_api.fetch(source.video_id, languages=languages)
+        except Exception:
+            available = list(transcript_api.list(source.video_id))
+            if not available:
+                raise
+            preferred = next(
+                (item for item in available if item.language_code in languages),
+                available[0],
+            )
+            fetched = preferred.fetch()
     except Exception as exc:
-        logger.exception("yt-dlp failed while downloading video %s", source.video_id)
+        logger.exception("Caption retrieval failed for video %s", source.video_id)
         raise LectureProcessingError(
-            "YouTube could not provide this video. Make sure it is public and available without sign-in."
+            "YouTube did not provide accessible captions for this video."
         ) from exc
 
-    audio_files = [
-        path
-        for path in output_path.glob("lecture.*")
-        if path.is_file() and path.suffix not in {".part", ".ytdl", ".json"}
-    ]
-    if not audio_files:
-        raise LectureProcessingError("YouTube did not provide a downloadable audio file for this video.")
-    return audio_files[0], title
+    return clean_transcript(
+        {
+            "start": float(item.get("start", 0)),
+            "end": float(item.get("start", 0)) + float(item.get("duration", 0)),
+            "text": str(item.get("text", "")),
+        }
+        for item in fetched.to_raw_data()
+    )
 
 
 def get_whisper_model() -> Any:
@@ -471,7 +474,7 @@ def ingest_youtube_lecture(
     raw_url: str,
     window_seconds: int = 30,
 ) -> tuple[IndexResult, YouTubeSource, str]:
-    """Download, transcribe, clean, chunk, embed, and index one lecture."""
+    """Fetch captions, chunk, embed, and index one lecture."""
 
     source = normalize_youtube_url(raw_url)
     lecture_id = source.video_id
@@ -491,18 +494,17 @@ def ingest_youtube_lecture(
         pass
 
     try:
-        with tempfile.TemporaryDirectory(prefix=f"lecture-{lecture_id}-") as temp_dir:
-            audio_path, title = download_youtube_audio(source, temp_dir)
-            transcript = transcribe_audio(audio_path)
-            chunks = chunk_by_time(transcript, window_seconds=window_seconds)
-            result = index_lecture_chunks(
-                client,
-                lecture_id=lecture_id,
-                source=source,
-                title=title,
-                chunks=chunks,
-                window_seconds=window_seconds,
-            )
+        transcript = fetch_youtube_transcript(source)
+        title = source.video_id
+        chunks = chunk_by_time(transcript, window_seconds=window_seconds)
+        result = index_lecture_chunks(
+            client,
+            lecture_id=lecture_id,
+            source=source,
+            title=title,
+            chunks=chunks,
+            window_seconds=window_seconds,
+        )
     except LectureProcessingError:
         raise
     except Exception as exc:
