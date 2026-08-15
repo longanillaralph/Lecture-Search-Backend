@@ -1,0 +1,9 @@
+[
+  {"question": "when does she explain what a limit is", "correct_start": 796},
+  {"question": "what is a tangent line", "correct_start": 135},
+  {"question": "how do you find the slope of a curve at a point", "correct_start": 100},
+  {"question": "what is a left-sided limit", "correct_start": 3570},
+  {"question": "what is a right-sided limit", "correct_start": 3500},
+  {"question": "when does a limit not exist", "correct_start": 3755},
+  {"question": "what are the two main goals of the class", "correct_start": 53}
+]

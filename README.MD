@@ -1,16 +1,17 @@
 # Lecture Search Tool
 
-Mag-upload ng lecture recording, at makakakuha ka ng searchable transcript. Magtanong tungkol sa lecture sa normal na pananalita, at deretso kang makakapunta sa timestamp kung saan ito tinalakay — imbes na mag-scrub ng 75-minutong recording nang manual.
+Upload a lecture recording, get back a searchable transcript. Ask a question about the lecture in plain language and jump straight to the timestamp where it was discussed — instead of scrubbing through a 75-minute recording by hand.
 
-## Paano ito gumagana
+## How it works
 
-Ang pipeline ay limang script, na pinapatakbo sa tamang pagkakasunod-sunod. Bawat isa ay nagbabasa ng file na ginawa ng script bago rito.
+The pipeline is six scripts, run in order. Each one reads the file(s) the previous script produced.
 
-1. **I-download ang audio** — kumuha ng lecture recording mula sa YouTube gamit ang `yt-dlp` (o gumamit ng kahit anong audio/video file).
-2. **`transcribe.py`** — ilo-load nito ang recording at ipapasa ito sa Whisper (`faster-whisper`) para makabuo ng timestamped transcript. Output: `transcript.json`, isang listahan ng maliliit na segments (kadalasan isang pangungusap bawat isa), bawat isa may start time, end time, at text.
-3. **`chunk.py`** — pinagsasama-sama nito ang maliliit na segments na iyon papuntang mas malalaking piraso (mga 60 segundo bawat isa), para may sapat na context ang bawat piraso para maintindihan mag-isa. Output: `chunks.json` — mas kaunti ang laman kumpara sa `transcript.json`, pero mas mahaba ang bawat entry.
-4. **`index.py`** — ginagawa nitong embedding (isang listahan ng numero na kumakatawan sa kahulugan) ang text ng bawat chunk, gamit ang sentence-transformers model, tapos itinatago ang embedding, ang orihinal na text, at ang timestamp nang magkakasama sa Chroma vector database. Output: isang `chroma_db/` folder sa disk (gumagamit ang Chroma ng SQLite sa ilalim para sa persistence, pero lahat ng read/write ay dumadaan sa Chroma's own API, hindi raw SQL).
-5. **`search.py`** — ilo-load nito ang parehong embedding model, kukuha ng tanong na ini-type mo, gagawin itong embedding sa parehong paraan, tapos hihingi sa Chroma ng 3 chunks na pinakamalapit ang kahulugan sa tanong mo. Ipi-print ang timestamp range at text ng bawat resulta.
+1. **Download audio** — grab a lecture recording from YouTube using `yt-dlp` (or use any local audio/video file).
+2. **`transcribe.py`** — loads the recording and runs it through Whisper (`faster-whisper`) to produce a timestamped transcript. Output: `transcript.json`, a list of small segments (mostly single sentences), each with a start time, end time, and text.
+3. **`chunk.py`** — groups those small segments into bigger windows, so each piece has enough context to make sense on its own. Generates three window sizes to compare: `chunks_30s.json`, `chunks_60s.json`, `chunks_120s.json` (see "Chunk size evaluation" below for why).
+4. **`index.py`** — turns each chunk's text into an embedding (a list of numbers representing its meaning) using a sentence-transformers model, then stores the embedding, the original text, and the timestamp together in a Chroma vector database. Each chunk size gets its own collection (`lecture1_30s`, `lecture1_60s`, `lecture1_120s`). Output: a `chroma_db/` folder on disk (Chroma uses SQLite internally for persistence, but all reads/writes go through Chroma's own API, not raw SQL).
+5. **`search.py`** — loads the same embedding model, takes a typed question, turns it into an embedding the same way, and asks Chroma for the 3 stored chunks whose embeddings are closest in meaning. Prints each result's timestamp range and text.
+6. **`evaluate.py`** — runs a set of test questions (each with a known correct timestamp) against every chunk size and measures how often the correct result comes back. This is the script that produced the evidence behind the chunk-size decision below.
 
 ```
 YouTube link
@@ -22,18 +23,37 @@ YouTube link
                 transcribe.py  ---->  transcript.json
                        |
                        v
-                  chunk.py      ---->  chunks.json
+                  chunk.py      ---->  chunks_30s.json / chunks_60s.json / chunks_120s.json
                        |
                        v
-                  index.py      ---->  chroma_db/
+                  index.py      ---->  chroma_db/ (3 collections)
                        |
                        v
-                  search.py     ---->  top 3 relevant timestamps
+         search.py  <----  evaluate.py (tests all 3 sizes)
+              |
+              v
+     top 3 relevant timestamps
 ```
 
-## Bakit semantic search, hindi keyword search
+## Why semantic search, not keyword search
 
-Ang search ay hindi naghahanap ng exact word matches — nagma-match ito base sa *kahulugan*. Kapag tinanong mo ang "what is limits?", tama itong nag-return ng chunks tungkol sa left-side/right-side limits at limit existence, kahit na hindi literal na lumalabas ang salitang "limits" sa bawat match. Nangyayari ito dahil ang embeddings ay naglalagay ng text na magkatulad ang kahulugan nang magkalapit sa vector space, kahit magkaiba ang eksaktong mga salitang ginamit.
+The search doesn't look for exact word matches — it matches on *meaning*. Asking "what is limits?" correctly returns chunks discussing left-side/right-side limits and limit existence, even without the word "limits" necessarily appearing verbatim in every match. This works because embeddings place text with similar meaning close together in vector space, regardless of the exact words used.
+
+## Chunk size evaluation
+
+The "messy decision" this project is built around is chunk size — too small and a chunk loses the context that makes it meaningful; too large and it returns more audio than the user actually wanted. Rather than guessing, three window sizes were tested (30s, 60s, 120s) against 7 real questions about the lecture, each with a manually-verified correct timestamp.
+
+**Results:**
+
+| Window size | Score |
+|---|---|
+| 30s | 4/7 |
+| 60s | 4/7 |
+| 120s | 2/7 |
+
+- 30s and 60s tied on accuracy; 120s clearly underperformed, consistent with the expected failure mode — larger chunks blend multiple topics together, diluting the embedding and making it less precise for narrow questions.
+- 2 of 7 questions failed at every window size. The corresponding timestamps were manually re-verified as correct, ruling out chunking as the cause — this points instead to a limitation in the `tiny` Whisper model's transcription accuracy or the embedding model itself, worth investigating separately.
+- **Selected: 30-second windows.** With 30s and 60s tied on accuracy, the tie-breaker was timestamp precision — a 30-second window lands a user closer to the exact moment they're looking for than a 60-second one, which matters more once accuracy is no longer the deciding factor.
 
 ## Setup
 
@@ -42,38 +62,45 @@ uv venv --python 3.12
 uv pip install faster-whisper sentence-transformers chromadb streamlit yt-dlp
 ```
 
-## Paggamit
+## Usage
 
 ```bash
-# 1. I-download ang isang lecture (o gumamit ng sarili mong audio/video file)
+# 1. Download a lecture (or supply your own audio/video file)
 yt-dlp -x --audio-format mp3 "YOUTUBE_URL"
 
-# 2. I-transcribe (i-edit muna ang filename sa loob ng transcribe.py)
+# 2. Transcribe (edit the filename inside transcribe.py first)
 python transcribe.py
 
-# 3. I-chunk ang transcript
+# 3. Chunk the transcript into three window sizes
 python chunk.py
 
-# 4. Gawin ang searchable index
+# 4. Build the searchable index (all three chunk sizes)
 python index.py
 
-# 5. Mag-search
+# 5. Evaluate which chunk size performs best
+python evaluate.py
+
+# 6. Search (uses the 30s window, per the evaluation above)
 python search.py
 ```
 
-## Kasalukuyang status
+## Current status
 
-- [x] Gumagana na ang transcription pipeline (na-test sa 75-minutong calculus lecture, 1618 raw segments)
-- [x] Pag-chunk papuntang 60-segundong windows (82 chunks)
-- [x] Embedding + Chroma indexing
-- [x] Gumagana ang semantic search, tama at magkaibang resulta sa iba't ibang topic sa iisang lecture
-- [ ] I-compare ang iba't ibang chunk window sizes gamit ang labeled na test questions, sukatin ang retrieval accuracy ng bawat size, piliin ang pinakamagaling na size base sa ebidensya
+- [x] Transcription pipeline working (tested on a 75-minute calculus lecture, 1618 raw segments)
+- [x] Chunking into three window sizes (30s: 157 chunks, 60s: 82 chunks, 120s: 43 chunks)
+- [x] Embedding + Chroma indexing (three separate collections)
+- [x] Semantic search returning relevant, correctly-distinguished results across different topics in the same lecture
+- [x] Compared chunk window sizes against 7 labeled test questions — **30-second windows selected**, based on accuracy matching the 60s window while returning more precise timestamps
 - [ ] Streamlit interface (upload + search box)
-- [ ] I-deploy
+- [ ] Deploy
+
+## Resume bullet
+
+Built a lecture search tool that transcribes audio and enables semantic search over timestamped segments; evaluated multiple chunking strategies against retrieval quality and selected 30-second windows, chosen for retrieval accuracy on par with larger windows while returning more precise timestamps.
 
 ## Stack
 
-| Piraso | Tool |
+| Piece | Tool |
 |---|---|
 | Transcription | faster-whisper (`tiny` model, CPU) |
 | Embeddings | sentence-transformers (`all-MiniLM-L6-v2`) |
