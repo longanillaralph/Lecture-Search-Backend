@@ -2,8 +2,17 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 import chromadb
 from sentence_transformers import SentenceTransformer
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="Lecture Search API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
+
 
 model = SentenceTransformer("all-MiniLM-L6-v2")
 client = chromadb.PersistentClient(path="./chroma_db")
