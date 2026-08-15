@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import threading
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -322,6 +323,19 @@ def fetch_youtube_transcript(source: YouTubeSource) -> list[dict[str, Any]]:
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
                 body = json.loads(response.read().decode("utf-8"))
+            job_id = body.get("jobId")
+            if job_id and not body.get("content"):
+                for _ in range(24):
+                    time.sleep(5)
+                    status_request = urllib.request.Request(
+                        f"https://api.supadata.ai/v1/transcript/{job_id}",
+                        headers={"x-api-key": supadata_key, "Accept": "application/json"},
+                    )
+                    with urllib.request.urlopen(status_request, timeout=60) as response:
+                        body = json.loads(response.read().decode("utf-8"))
+                    if body.get("content"):
+                        break
+
             content = body.get("content", [])
             if not isinstance(content, list) or not content:
                 raise ValueError("Supadata returned no transcript content.")
