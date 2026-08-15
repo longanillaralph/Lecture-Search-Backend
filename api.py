@@ -20,6 +20,7 @@ from pipeline import (
     generate_answer,
     get_chroma_client,
     ingest_youtube_lecture,
+    normalize_youtube_url,
     search_lecture,
 )
 
@@ -52,6 +53,7 @@ app.add_middleware(
 
 client = get_chroma_client()
 ingestion_lock = threading.Lock()
+lecture_jobs: dict[str, dict[str, Any]] = {}
 
 
 class LectureCreateRequest(BaseModel):
@@ -156,6 +158,20 @@ def _process_lecture(url: str) -> LectureResponse:
     )
 
 
+def _run_lecture_job(url: str, lecture_id: str) -> None:
+    try:
+        lecture_jobs[lecture_id] = {"status": "processing"}
+        response = _process_lecture(url)
+        lecture_jobs[lecture_id] = response.model_dump()
+    except HTTPException as exc:
+        lecture_jobs[lecture_id] = {"status": "error", "detail": exc.detail}
+    except Exception:
+        lecture_jobs[lecture_id] = {
+            "status": "error",
+            "detail": "Lecture processing failed. Check the backend logs.",
+        }
+
+
 def _answer_if_requested(
     question: str,
     results: list[dict[str, Any]],
@@ -203,17 +219,38 @@ def _search_response(
     )
 
 
-@app.post(
-    "/lectures",
-    response_model=LectureResponse,
-    status_code=201,
-)
+@app.post("/lectures", response_model=LectureResponse, status_code=202)
 def create_lecture(
     request: LectureCreateRequest,
 ) -> LectureResponse:
     """Process a YouTube lecture and return its stable lecture_id."""
 
-    return _process_lecture(str(request.url))
+    source = normalize_youtube_url(str(request.url))
+    existing = lecture_jobs.get(source.video_id)
+    if existing and existing.get("status") in {"processing", "ready", "already_indexed"}:
+        return LectureResponse(
+            lecture_id=source.video_id,
+            video_id=source.video_id,
+            title=str(existing.get("title") or source.video_id),
+            source_url=source.canonical_url,
+            status=str(existing.get("status")),
+            chunk_count=int(existing.get("chunk_count", 0)),
+        )
+
+    lecture_jobs[source.video_id] = {"status": "processing"}
+    threading.Thread(
+        target=_run_lecture_job,
+        args=(str(request.url), source.video_id),
+        daemon=True,
+    ).start()
+    return LectureResponse(
+        lecture_id=source.video_id,
+        video_id=source.video_id,
+        title=source.video_id,
+        source_url=source.canonical_url,
+        status="processing",
+        chunk_count=0,
+    )
 
 
 @app.get(
@@ -224,6 +261,20 @@ def get_lecture(
     lecture_id: str,
 ) -> LectureDetailsResponse:
     """Return metadata for an indexed lecture."""
+
+    job = lecture_jobs.get(lecture_id)
+    if job and job.get("status") == "processing":
+        return LectureDetailsResponse(
+            lecture_id=lecture_id,
+            video_id=lecture_id,
+            title=lecture_id,
+            source_url=f"https://www.youtube.com/watch?v={lecture_id}",
+            status="processing",
+            chunk_count=0,
+            collection_name=collection_name_for(lecture_id),
+        )
+    if job and job.get("status") == "error":
+        raise HTTPException(status_code=502, detail=job.get("detail", "Lecture processing failed."))
 
     try:
         collection = client.get_collection(
