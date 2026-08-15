@@ -315,7 +315,7 @@ def fetch_youtube_transcript(source: YouTubeSource) -> list[dict[str, Any]]:
             for language in os.getenv("TRANSCRIPT_LANGUAGES", "en").split(",")
             if language.strip()
         ] or ["en"]
-        query = urlencode({"url": source.canonical_url, "lang": languages[0], "mode": "auto"})
+        query = urlencode({"url": source.canonical_url, "lang": languages[0], "mode": "native"})
         request = urllib.request.Request(
             f"https://api.supadata.ai/v1/transcript?{query}",
             headers={"x-api-key": supadata_key, "Accept": "application/json"},
